@@ -1,0 +1,29 @@
+{
+  "name": "@runwright/core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc --project tsconfig.json && mkdir -p lib/migrations && cp src/migrations/001_initial.sql lib/migrations/001_initial.sql",
+    "dev": "node --watch src/index.ts",
+    "start": "node lib/index.js",
+    "test": "vitest run src",
+    "typecheck": "tsc --project tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@runwright/contracts": "workspace:*",
+    "better-sqlite3": "^12.4.1"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^24.19.2",
+    "typescript": "6.0.3",
+    "vitest": "4.1.8"
+  }
+}

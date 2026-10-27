@@ -1,0 +1,16 @@
+{
+  "name": "runwright-workbench",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "scripts": {
+    "build": "pnpm --recursive build",
+    "test": "pnpm --recursive test",
+    "typecheck": "pnpm --recursive typecheck",
+    "core:dev": "pnpm --filter @runwright/core dev",
+    "core:start": "pnpm --filter @runwright/core start",
+    "adapter:build": "pnpm --filter @runwright/next-adapter build"
+  }
+}

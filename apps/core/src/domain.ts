@@ -1,4 +1,4 @@
-import type { Project, Run, RuntimeEvent, Task, TaskStatus } from '@runwright/contracts'
+import type { Project, Run, Task, TaskStatus } from '@runwright/contracts'
 
 export interface ProjectRow {
   id: string
@@ -67,21 +67,4 @@ export function toRun(row: RunRow): Run {
 
 export function isTerminal(status: TaskStatus): boolean {
   return status === 'succeeded' || status === 'failed' || status === 'cancelled'
-}
-
-export function statusForEvent(event: RuntimeEvent): TaskStatus {
-  switch (event.type) {
-    case 'run.started':
-    case 'run.progress':
-    case 'validation.completed':
-      return 'running'
-    case 'approval.requested':
-      return 'waiting_approval'
-    case 'run.succeeded':
-      return 'succeeded'
-    case 'run.failed':
-      return 'failed'
-    case 'run.attention':
-      return 'attention'
-  }
 }

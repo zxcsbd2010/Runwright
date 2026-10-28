@@ -30,6 +30,7 @@ describe('projects and snapshots', () => {
     expect((await store.snapshot()).projects).toEqual([project])
     const audits = db.prepare('SELECT payload_json FROM audits').all() as Array<{ payload_json: string }>
     expect(JSON.stringify(audits)).not.toContain(project.rootPath)
+    expect(JSON.stringify(audits)).not.toContain(project.name)
   })
 })
 
@@ -54,7 +55,7 @@ describe('task and run lifecycle', () => {
     const run = detail.runs[0]!
     await store.recordDispatch(run.id)
     await store.attachRuntime(run.id, 'next-local', 'session-1')
-    await store.applyEvent(run.id, { seq: 1, type: 'run.failed', errorCode: 'MODEL_FAILED' })
+    await store.applyRuntimeEvent(run.id, { seq: 1, type: 'run.failed', errorCode: 'MODEL_FAILED' })
 
     const retry = await store.retry(detail.task.id)
     expect(retry).toMatchObject({ attempt: 2, status: 'queued' })
@@ -103,32 +104,49 @@ describe('event transactions', () => {
   it('applies continuous events and ignores duplicates', async () => {
     const detail = await createTask()
     const run = detail.runs[0]!
-    await store.applyEvent(run.id, { seq: 1, type: 'run.started' })
-    await store.applyEvent(run.id, { seq: 2, type: 'validation.completed', summary: '2 tests passed' })
-    await store.applyEvent(run.id, { seq: 2, type: 'validation.completed', summary: 'duplicate' })
+    expect(await store.applyRuntimeEvent(run.id, { seq: 1, type: 'run.started' })).toBe('applied')
+    expect(await store.applyRuntimeEvent(run.id, { seq: 2, type: 'validation.completed', summary: '2 tests passed' })).toBe('applied')
+    expect(await store.applyRuntimeEvent(run.id, { seq: 2, type: 'validation.completed', summary: 'duplicate' })).toBe('duplicate')
 
     const updated = await store.getDetail(detail.task.id)
     expect(updated.runs[0]).toMatchObject({ status: 'running', lastEventSeq: 2 })
     expect(updated.validationSummary).toBe('2 tests passed')
   })
 
-  it('rolls back state and cursor when audit insertion fails', async () => {
+  it('rolls back run, task, cursor, and audit when audit insertion fails', async () => {
     const detail = await createTask()
     const run = detail.runs[0]!
+    const auditsBefore = db.prepare('SELECT COUNT(*) AS count FROM audits').get() as { count: number }
     db.exec(`CREATE TRIGGER fail_runtime_audit BEFORE INSERT ON audits WHEN NEW.kind = 'runtime.event'
       BEGIN SELECT RAISE(ABORT, 'forced audit failure'); END`)
 
-    await expect(store.applyEvent(run.id, { seq: 1, type: 'run.succeeded', summary: 'done' })).rejects.toThrow('forced audit failure')
+    await expect(store.applyRuntimeEvent(run.id, { seq: 1, type: 'run.succeeded', summary: 'done' })).rejects.toThrow('forced audit failure')
     const persisted = db.prepare('SELECT status, last_event_seq FROM runs').get()
     expect(persisted).toEqual({ status: 'queued', last_event_seq: 0 })
+    expect((await store.getDetail(detail.task.id)).task.status).toBe('queued')
+    expect(db.prepare('SELECT COUNT(*) AS count FROM audits').get()).toEqual(auditsBefore)
   })
 
-  it('does not let later events overwrite a terminal run', async () => {
+  it('advances contiguous events after terminal without overwriting terminal status', async () => {
     const detail = await createTask()
     const run = detail.runs[0]!
-    await store.applyEvent(run.id, { seq: 1, type: 'run.failed', errorCode: 'MODEL_FAILED' })
-    await store.applyEvent(run.id, { seq: 2, type: 'run.succeeded', summary: 'stale success' })
-    expect((await store.getDetail(detail.task.id)).runs[0]).toMatchObject({ status: 'failed', errorCode: 'MODEL_FAILED' })
+    await store.applyRuntimeEvent(run.id, { seq: 1, type: 'run.failed', errorCode: 'MODEL_FAILED' })
+    const terminal = await store.getDetail(detail.task.id)
+
+    expect(await store.applyRuntimeEvent(run.id, {
+      seq: 2,
+      type: 'run.succeeded',
+      summary: 'late success',
+    })).toBe('applied')
+
+    const updated = await store.getDetail(detail.task.id)
+    expect(updated.task.status).toBe('failed')
+    expect(updated.runs[0]).toMatchObject({
+      status: 'failed',
+      errorCode: 'MODEL_FAILED',
+      lastEventSeq: 2,
+      endedAt: terminal.runs[0]?.endedAt,
+    })
   })
 })
 
@@ -142,7 +160,7 @@ describe('migrations', () => {
       const persistedProject = await first.registerProject({ name: 'Persistent', rootPath: '/tmp/persistent' })
       const detail = await first.createTask({ projectId: persistedProject.id, prompt: 'persist me' })
       await first.attachRuntime(detail.runs[0]!.id, 'next-local', 'session-persistent')
-      await first.applyEvent(detail.runs[0]!.id, { seq: 1, type: 'run.failed', errorCode: 'MODEL_FAILED' })
+      await first.applyRuntimeEvent(detail.runs[0]!.id, { seq: 1, type: 'run.failed', errorCode: 'MODEL_FAILED' })
       await first.retry(detail.task.id)
 
       const reopened = openDatabase(path)

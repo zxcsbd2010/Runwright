@@ -78,15 +78,19 @@ export const attachRunInputSchema = z.strictObject({
   runId: idSchema,
   sessionId: idSchema,
   afterSeq: z.number().int().nonnegative().optional(),
+  project: projectSchema.optional(),
+  policy: executionPolicySchema.optional(),
 })
 
 export const runtimeEventSchema = z.discriminatedUnion('type', [
   z.strictObject({ ...eventBase, type: z.literal('run.started') }),
   z.strictObject({ ...eventBase, type: z.literal('run.progress'), summary: summarySchema }),
   z.strictObject({ ...eventBase, type: z.literal('approval.requested'), approvalId: idSchema }),
+  z.strictObject({ ...eventBase, type: z.literal('approval.resolved'), approvalId: idSchema }),
   z.strictObject({ ...eventBase, type: z.literal('validation.completed'), summary: summarySchema }),
   z.strictObject({ ...eventBase, type: z.literal('run.succeeded'), summary: summarySchema }),
   z.strictObject({ ...eventBase, type: z.literal('run.failed'), errorCode: z.string().min(1) }),
+  z.strictObject({ ...eventBase, type: z.literal('run.cancelled') }),
   z.strictObject({ ...eventBase, type: z.literal('run.attention'), reason: summarySchema }),
 ])
 
@@ -143,6 +147,7 @@ export const runtimeHelloFrameSchema = z.strictObject({
 
 export const runtimeEventFrameSchema = z.strictObject({
   type: z.literal('event'),
+  id: idSchema,
   runtimeId: idSchema,
   runId: idSchema,
   event: runtimeEventSchema,

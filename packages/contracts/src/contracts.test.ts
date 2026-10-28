@@ -42,10 +42,12 @@ describe('runtimeEventSchema', () => {
       { seq: 1, type: 'run.started' },
       { seq: 2, type: 'run.progress', summary: 'editing' },
       { seq: 3, type: 'approval.requested', approvalId: 'approval-1' },
-      { seq: 4, type: 'validation.completed', summary: '2 tests passed' },
-      { seq: 5, type: 'run.succeeded', summary: 'done' },
-      { seq: 6, type: 'run.failed', errorCode: 'MODEL_FAILED' },
-      { seq: 7, type: 'run.attention', reason: 'unknown outcome' },
+      { seq: 4, type: 'approval.resolved', approvalId: 'approval-1' },
+      { seq: 5, type: 'validation.completed', summary: '2 tests passed' },
+      { seq: 6, type: 'run.succeeded', summary: 'done' },
+      { seq: 7, type: 'run.failed', errorCode: 'MODEL_FAILED' },
+      { seq: 8, type: 'run.cancelled' },
+      { seq: 9, type: 'run.attention', reason: 'unknown outcome' },
     ]
 
     for (const event of events) {

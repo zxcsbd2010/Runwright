@@ -12,7 +12,8 @@
   },
   "scripts": {
     "build": "pnpm --recursive build",
-    "test": "pnpm --recursive test",
+    "test": "pnpm --filter @runwright/contracts build && pnpm --recursive test",
+    "test:integration": "pnpm --filter @runwright/core exec vitest run --root ../.. --config vitest.integration.config.ts",
     "typecheck": "pnpm --recursive typecheck",
     "core:dev": "pnpm --filter @runwright/core dev",
     "core:start": "pnpm --filter @runwright/core start",

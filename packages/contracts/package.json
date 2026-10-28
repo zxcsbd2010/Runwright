@@ -6,11 +6,11 @@
   "exports": {
     ".": {
       "types": "./src/index.ts",
-      "default": "./src/index.ts"
+      "default": "./lib/index.js"
     },
     "./schemas": {
       "types": "./src/schemas.ts",
-      "default": "./src/schemas.ts"
+      "default": "./lib/schemas.js"
     }
   },
   "scripts": {

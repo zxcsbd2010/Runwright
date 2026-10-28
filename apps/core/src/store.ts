@@ -1,12 +1,63 @@
 import { randomUUID } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import type { Project, Run, RuntimeEvent, Task, TaskDetail, TaskStatus } from '@runwright/contracts'
-import { isTerminal, statusForEvent, toProject, toRun, toTask } from './domain.js'
+import { isTerminal, toProject, toRun, toTask } from './domain.js'
 import type { ProjectRow, RunRow, TaskRow } from './domain.js'
+import { applyRuntimeEvent as projectRuntimeEvent } from './events.js'
+import type { ApplyRuntimeEventResult } from './events.js'
 
 interface CoreSnapshot {
   projects: Project[]
   tasks: Task[]
+}
+
+export interface RunContext {
+  project: Project
+  task: Task
+  run: Run
+  dispatchRequested: boolean
+  cancelRequested: boolean
+}
+
+interface RunContextRow extends RunRow {
+  prompt: string
+  project_id: string
+  task_status: TaskStatus
+  task_active_run_id: string | null
+  task_created_at: string
+  task_updated_at: string
+  project_name: string
+  project_root_path: string
+  project_created_at: string
+}
+
+const runContextSelect = `SELECT r.*, t.prompt, t.project_id, t.status AS task_status,
+  t.active_run_id AS task_active_run_id,
+  t.created_at AS task_created_at, t.updated_at AS task_updated_at,
+  p.name AS project_name, p.root_path AS project_root_path, p.created_at AS project_created_at
+  FROM runs r JOIN tasks t ON t.id = r.task_id JOIN projects p ON p.id = t.project_id`
+
+function toRunContext(row: RunContextRow): RunContext {
+  return {
+    project: {
+      id: row.project_id,
+      name: row.project_name,
+      rootPath: row.project_root_path,
+      createdAt: row.project_created_at,
+    },
+    task: {
+      id: row.task_id,
+      projectId: row.project_id,
+      prompt: row.prompt,
+      status: row.task_status,
+      ...(row.task_active_run_id ? { activeRunId: row.task_active_run_id } : {}),
+      createdAt: row.task_created_at,
+      updatedAt: row.task_updated_at,
+    },
+    run: toRun(row),
+    dispatchRequested: row.dispatch_requested === 1,
+    cancelRequested: row.cancel_requested === 1,
+  }
 }
 
 export class CoreStore {
@@ -23,7 +74,7 @@ export class CoreStore {
       this.db.prepare('INSERT INTO projects (id, name, root_path, created_at) VALUES (?, ?, ?, ?)').run(
         project.id, project.name, project.root_path, project.created_at,
       )
-      this.audit(null, 'project.registered', { projectId: project.id, name: project.name })
+      this.audit(null, 'project.registered', { projectId: project.id })
       return toProject(project)
     })()
   }
@@ -70,58 +121,46 @@ export class CoreStore {
     return this.detail(taskId)
   }
 
-  async recordDispatch(runId: string): Promise<void> {
-    this.db.transaction(() => {
+  async getRunContext(runId: string): Promise<RunContext> {
+    const row = this.db.prepare(`${runContextSelect} WHERE r.id = ?`).get(runId) as RunContextRow | undefined
+    if (!row) throw new Error('RUN_NOT_FOUND')
+    return toRunContext(row)
+  }
+
+  async listRecoveryRuns(): Promise<RunContext[]> {
+    const rows = this.db.prepare(`${runContextSelect}
+      WHERE t.active_run_id = r.id AND (r.status IN ('queued','running','waiting_approval')
+        OR (r.status = 'attention' AND r.cancel_requested = 1))
+      ORDER BY r.created_at, r.id`).all() as RunContextRow[]
+    return rows.map(toRunContext)
+  }
+
+  async recordDispatch(runId: string): Promise<boolean> {
+    return this.db.transaction(() => {
       const run = this.run(runId)
-      this.db.prepare('UPDATE runs SET dispatch_requested = 1 WHERE id = ?').run(runId)
+      const result = this.db.prepare('UPDATE runs SET dispatch_requested = 1 WHERE id = ? AND dispatch_requested = 0').run(runId)
+      if (result.changes === 0) return false
       this.audit(runId, 'runtime.dispatch_requested', { runId, status: run.status })
+      return true
     })()
   }
 
   async attachRuntime(runId: string, runtimeId: string, sessionId: string): Promise<void> {
     this.db.transaction(() => {
-      this.run(runId)
+      const run = this.run(runId)
+      const status = run.status === 'waiting_approval' || run.status === 'attention' ? run.status : 'running'
       const now = new Date().toISOString()
-      this.db.prepare(`UPDATE runs SET runtime_id = ?, session_id = ?, status = 'running',
-        started_at = COALESCE(started_at, ?), ended_at = NULL WHERE id = ?`).run(runtimeId, sessionId, now, runId)
-      this.db.prepare(`UPDATE tasks SET status = 'running', updated_at = ? WHERE active_run_id = ?`).run(now, runId)
-      this.audit(runId, 'runtime.attached', { runId, runtimeId, sessionId, status: 'running' })
+      this.db.prepare(`UPDATE runs SET runtime_id = ?, session_id = ?, status = ?,
+        started_at = COALESCE(started_at, ?), ended_at = NULL WHERE id = ?`).run(runtimeId, sessionId, status, now, runId)
+      this.db.prepare('UPDATE tasks SET status = ?, updated_at = ? WHERE active_run_id = ?').run(status, now, runId)
+      this.audit(runId, 'runtime.attached', { runId, runtimeId, sessionId, status })
     })()
   }
 
-  async applyEvent(runId: string, event: RuntimeEvent): Promise<void> {
-    this.db.transaction(() => {
-      const run = this.run(runId)
-      if (isTerminal(run.status) || event.seq <= run.last_event_seq) return
-
-      const status = statusForEvent(event)
-      const now = new Date().toISOString()
-      const errorCode = event.type === 'run.failed'
-        ? event.errorCode
-        : event.type === 'run.attention' ? event.reason : run.error_code
-      const validationSummary = event.type === 'validation.completed'
-        ? event.summary
-        : run.validation_summary
-      this.db.prepare(`UPDATE runs SET status = ?, started_at = COALESCE(started_at, ?),
-        ended_at = ?, last_event_seq = ?, error_code = ?, validation_summary = ? WHERE id = ?`).run(
-        status,
-        now,
-        isTerminal(status) ? now : null,
-        event.seq,
-        errorCode,
-        validationSummary,
-        runId,
-      )
-      this.db.prepare('UPDATE tasks SET status = ?, updated_at = ? WHERE active_run_id = ?').run(status, now, runId)
-      this.audit(runId, 'runtime.event', {
-        runId,
-        seq: event.seq,
-        eventType: event.type,
-        status,
-        ...(event.type === 'run.failed' ? { errorCode: event.errorCode } : {}),
-        ...('summary' in event ? { summary: event.summary } : {}),
-      })
-    })()
+  async applyRuntimeEvent(runId: string, event: RuntimeEvent): Promise<ApplyRuntimeEventResult> {
+    return projectRuntimeEvent(this.db, runId, event, (auditRunId, kind, payload) => {
+      this.audit(auditRunId, kind, payload)
+    })
   }
 
   async requestCancel(taskId: string): Promise<void> {

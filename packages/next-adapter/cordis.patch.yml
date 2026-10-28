@@ -1,0 +1,3 @@
+- insert:
+    - id: runwright-next-adapter
+      name: '@runwright/next-adapter'

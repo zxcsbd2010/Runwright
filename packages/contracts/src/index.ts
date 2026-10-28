@@ -72,15 +72,19 @@ export interface AttachRunInput {
   runId: string
   sessionId: string
   afterSeq?: number
+  project?: Project
+  policy?: ExecutionPolicy
 }
 
 export type RuntimeEvent =
   | { seq: number; type: 'run.started' }
   | { seq: number; type: 'run.progress'; summary: string }
   | { seq: number; type: 'approval.requested'; approvalId: string }
+  | { seq: number; type: 'approval.resolved'; approvalId: string }
   | { seq: number; type: 'validation.completed'; summary: string }
   | { seq: number; type: 'run.succeeded'; summary: string }
   | { seq: number; type: 'run.failed'; errorCode: string }
+  | { seq: number; type: 'run.cancelled' }
   | { seq: number; type: 'run.attention'; reason: string }
 
 export interface RunSnapshot {
@@ -95,6 +99,7 @@ export interface RuntimeDriver {
   cancelRun(ref: RuntimeRunRef): Promise<void>
   getRunSnapshot(ref: RuntimeRunRef): Promise<RunSnapshot>
   subscribe(ref: RuntimeRunRef): AsyncIterable<RuntimeEvent>
+  acknowledge?(ref: RuntimeRunRef, event: RuntimeEvent, error?: unknown): void | Promise<void>
 }
 
 export interface RuntimeHello {
@@ -142,6 +147,7 @@ export interface RuntimeHelloFrame {
 
 export interface RuntimeEventFrame {
   type: 'event'
+  id: string
   runtimeId: string
   runId: string
   event: RuntimeEvent

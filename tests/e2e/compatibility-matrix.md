@@ -1,17 +1,17 @@
 # Core / adapter / NEXT 独立升级兼容矩阵
 
-验收日期：2026-10-27
+验收日期：2026-10-28
 
-状态：**BLOCKED — 无真实 NEXT 实机证据**。本机仅有官方 DeepSeek Harness 0.2.1-rc.3，不是 Anywhere Labs DSH NEXT 2.0.20-next。adapter 已声明 `dsh.bundle.patch` 安装入口，但尚未在真实 NEXT 中安装或激活。
+状态：**IN PROGRESS — 真实 NEXT 已运行，adapter 完整激活和独立升级矩阵尚未通过**。0.1.0、0.1.1 的真实安装故障已记录于 `next-golden-path.md`；0.1.2 仅完成包测试和打包，尚未安装，不作为升级通过证据。
 
 ## 实测基线
 
 | 组件 | 实测版本 | 实机状态 |
 | --- | --- | --- |
-| Core | 当前工作树构建产物 | 未与真实 NEXT 联机 |
-| adapter | 当前工作树构建产物 | 未安装或激活 |
-| NEXT | 未安装 | 阻断 |
-| DSH | 0.2.1-rc.3（官方 DeepSeek Harness） | 非 NEXT 替代品 |
+| Core | 0.1.0 | 隔离 Core 正监听 `127.0.0.1:47832`；adapter 0.1.1 Host 曾建立已认证连接 |
+| adapter | 当前安装 0.1.1；候选 0.1.2 | 0.1.1 完整重启后客户端服务依赖 pending；0.1.2 尚未安装 |
+| NEXT | 2.0.20-next（`ai.deepseek.dsh.desktop.next`） | 隔离 Profile 可启动并进入恢复 UI；正常工作台尚未恢复 |
+| DSH | NEXT 内置 0.2.1-rc.3 | 版本已由真实应用核验；另有官方 DeepSeek Harness 同版本，但不作为 NEXT 验收替代 |
 
 ## 单组件升级矩阵
 

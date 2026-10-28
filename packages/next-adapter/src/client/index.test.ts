@@ -1,6 +1,6 @@
 import type { Project, TaskDetail } from '@runwright/contracts'
 import { describe, expect, it, vi } from 'vitest'
-import { createRunwrightClient } from './index.js'
+import { createRunwrightClient, inject } from './index.js'
 import type { RemoteStreamOptions, RunwrightClientContext } from './index.js'
 import type { RunwrightFollowFrame } from './store.js'
 
@@ -43,12 +43,13 @@ interface ClientFixture {
   ctx: RunwrightClientContext
   registerProject: ReturnType<typeof vi.fn>
   pick: ReturnType<typeof vi.fn>
-  open: ReturnType<typeof vi.fn>
+  navigate: ReturnType<typeof vi.fn>
   openSession: ReturnType<typeof vi.fn>
   follow: ReturnType<typeof vi.fn>
   streamOptions: { current?: RemoteStreamOptions<RunwrightFollowFrame> }
-  supervisor: { dispose: ReturnType<typeof vi.fn> }
+  supervisor: { dispose: () => Promise<void> }
   unmount: ReturnType<typeof vi.fn>
+  remoteDispose: () => Promise<void>
   effect: ReturnType<typeof vi.fn>
   inject: ReturnType<typeof vi.fn>
 }
@@ -56,14 +57,27 @@ interface ClientFixture {
 function fixture(picked: unknown = { ok: true, value: null }): ClientFixture {
   const registerProject = vi.fn(async () => ({ ok: true as const, value: project }))
   const pick = vi.fn(async () => picked)
-  const open = vi.fn()
+  const navigate = vi.fn()
   const openSession = vi.fn(async () => ({ ok: true as const, value: 'session-1' }))
   const follow = vi.fn()
   const unmount = vi.fn(async () => {})
+  const remoteDispose = vi.fn(async () => {})
   const effect = vi.fn()
   const inject = vi.fn()
   const supervisor = { dispose: vi.fn(async () => {}) }
   const streamOptions: ClientFixture['streamOptions'] = {}
+  const runwright = {
+    listProjects: vi.fn(),
+    registerProject,
+    createTask: vi.fn(),
+    listTasks: vi.fn(),
+    getDetail: vi.fn(),
+    cancelTask: vi.fn(),
+    retryTask: vi.fn(),
+    openSession,
+    follow,
+  }
+  let runwrightInjected = false
   const remote = {
     $mount: vi.fn(async () => unmount),
     $stream: vi.fn((options: RemoteStreamOptions<RunwrightFollowFrame>) => {
@@ -75,22 +89,25 @@ function fixture(picked: unknown = { ok: true, value: null }): ClientFixture {
         },
       }
     }),
-    runwright: {
-      listProjects: vi.fn(),
-      registerProject,
-      createTask: vi.fn(),
-      listTasks: vi.fn(),
-      getDetail: vi.fn(),
-      cancelTask: vi.fn(),
-      retryTask: vi.fn(),
-      openSession,
-      follow,
+    get runwright() {
+      if (!runwrightInjected) throw new Error('cannot get property "remote.runwright" without inject')
+      return runwright
     },
-  }
-  const ctx = {
-    remote,
     directoryPicker: { pick },
-    sessions: { open },
+  }
+  const remoteInject = vi.fn((services: string[], callback: (ctx: RunwrightClientContext) => void) => {
+    runwrightInjected = services.includes('remote.runwright')
+    try {
+      callback({ remote } as unknown as RunwrightClientContext)
+    } finally {
+      runwrightInjected = false
+    }
+    return { dispose: remoteDispose }
+  })
+  const ctx = {
+    inject: remoteInject,
+    remote,
+    uiWorkspace: { openSession: navigate },
     slots: {
       inject,
       register: vi.fn((registration: unknown) => registration),
@@ -101,24 +118,30 @@ function fixture(picked: unknown = { ok: true, value: null }): ClientFixture {
     ctx,
     registerProject,
     pick,
-    open,
+    navigate,
     openSession,
     follow,
     streamOptions,
     supervisor,
     unmount,
+    remoteDispose,
     effect,
     inject,
   }
 }
 
 describe('Runwright Client composition', () => {
+  it('depends only on services available before mounting the Runwright remote', () => {
+    expect(inject).toEqual(['slots', 'uiWorkspace', 'remote', 'remote.directoryPicker'])
+  })
+
   it('mounts the contribution and supervises baseline acceptance through remote.$stream', async () => {
     const fake = fixture()
     const client = await createRunwrightClient(fake.ctx)
     await vi.waitFor(() => expect(client.store.getSnapshot().phase).toBe('ready'))
 
     expect(fake.ctx.remote.$mount).toHaveBeenCalledTimes(1)
+    expect(fake.ctx.inject).toHaveBeenCalledWith(['remote.runwright'], expect.any(Function))
     expect(fake.inject).toHaveBeenCalledWith('settings.section', expect.any(Function))
     expect(fake.inject).not.toHaveBeenCalledWith('main', expect.any(Function))
     expect(client.store.getSnapshot().projects).toEqual([project])
@@ -129,7 +152,56 @@ describe('Runwright Client composition', () => {
 
     await client.dispose()
     expect(fake.supervisor.dispose).toHaveBeenCalledTimes(1)
+    expect(fake.remoteDispose).toHaveBeenCalledTimes(1)
     expect(fake.unmount).toHaveBeenCalledTimes(1)
+  })
+
+  it('waits for the dynamic Remote scope before opening the follow stream', async () => {
+    const fake = fixture()
+    const remoteInject = vi.mocked(fake.ctx.inject).getMockImplementation()!
+    vi.mocked(fake.ctx.inject).mockImplementation((services, callback) => {
+      queueMicrotask(() => remoteInject(services, callback))
+      return { dispose: fake.remoteDispose }
+    })
+    fake.follow.mockReturnValue((async function * () {})())
+    vi.mocked(fake.ctx.remote.$stream).mockImplementation(<Item,>(options: RemoteStreamOptions<Item>) => {
+      const followOptions = options as unknown as RemoteStreamOptions<RunwrightFollowFrame>
+      fake.streamOptions.current = followOptions
+      followOptions.open(new AbortController().signal)
+      return {
+        dispose: fake.supervisor.dispose,
+        async *[Symbol.asyncIterator]() {},
+      }
+    })
+
+    const client = await createRunwrightClient(fake.ctx)
+
+    expect(fake.follow).toHaveBeenCalledTimes(1)
+    await client.dispose()
+  })
+
+  it('uses the NEXT native picker when the Remote composition only offers browse', async () => {
+    const fake = fixture()
+    const nativePick = vi.fn(async () => '/picked/demo')
+    fake.pick.mockRejectedValue(new Error('directoryPicker.pick needs the native capability; the composed picker serves "browse"'))
+    const desktop = globalThis as typeof globalThis & {
+      __DSH_DIRECTORY_PICKER__?: { pick(): Promise<string | null> }
+    }
+    desktop.__DSH_DIRECTORY_PICKER__ = { pick: nativePick }
+
+    try {
+      const client = await createRunwrightClient(fake.ctx)
+      await client.actions.registerProject()
+
+      expect(nativePick).toHaveBeenCalledTimes(1)
+      expect(fake.registerProject).toHaveBeenCalledWith(
+        { name: 'demo', rootPath: '/picked/demo' },
+        expect.any(AbortSignal),
+      )
+      await client.dispose()
+    } finally {
+      delete desktop.__DSH_DIRECTORY_PICKER__
+    }
   })
 
   it('treats picker cancellation as a no-op and unwraps only the picked path for registration', async () => {
@@ -149,14 +221,14 @@ describe('Runwright Client composition', () => {
     await pickedClient.dispose()
   })
 
-  it('opens the Result Session through ctx.sessions.open', async () => {
+  it('opens the Result Session through the real NEXT workspace navigation API', async () => {
     const fake = fixture()
     const client = await createRunwrightClient(fake.ctx)
 
     await client.actions.openSession(detail.task.id)
 
     expect(fake.openSession).toHaveBeenCalledWith(detail.task.id, expect.any(AbortSignal))
-    expect(fake.open).toHaveBeenCalledWith('session-1')
+    expect(fake.navigate).toHaveBeenCalledWith('session-1')
     await client.dispose()
   })
 
@@ -187,6 +259,6 @@ describe('Runwright Client composition', () => {
     await Promise.all([registering, opening])
 
     expect(fake.registerProject).not.toHaveBeenCalled()
-    expect(fake.open).not.toHaveBeenCalled()
+    expect(fake.navigate).not.toHaveBeenCalled()
   })
 })

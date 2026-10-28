@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import type { Project, Task, TaskDetail } from '@runwright/contracts'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { RunwrightWorkbench } from './workbench.js'
@@ -82,8 +82,10 @@ describe('RunwrightWorkbench', () => {
       selectedTaskId: queued.id,
     })} />)
 
-    expect(screen.getByText('queued')).not.toBeNull()
-    expect(screen.getByText('waiting_approval')).not.toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: '展开工作台概览' }))
+    const taskList = within(screen.getByRole('region', { name: '任务列表' }))
+    expect(taskList.getByText('queued')).not.toBeNull()
+    expect(taskList.getByText('waiting_approval')).not.toBeNull()
     expect(screen.getByText('未提供结构化验证结果')).not.toBeNull()
     expect(screen.queryByText('测试通过')).toBeNull()
   })
@@ -98,6 +100,7 @@ describe('RunwrightWorkbench', () => {
       selectedTaskId: succeeded.id,
     })} />)
 
+    fireEvent.click(screen.getByRole('button', { name: '展开工作台概览' }))
     expect(screen.getByText('构建完成，0 个错误')).not.toBeNull()
     expect(screen.queryByText('测试通过')).toBeNull()
   })
@@ -113,6 +116,7 @@ describe('RunwrightWorkbench', () => {
     })
     render(<RunwrightWorkbench {...actions} />)
 
+    fireEvent.click(screen.getByRole('button', { name: '展开工作台概览' }))
     fireEvent.change(screen.getByLabelText('需求'), { target: { value: 'Fix the failure' } })
     fireEvent.click(screen.getByRole('button', { name: '创建任务' }))
     fireEvent.click(screen.getByRole('button', { name: '取消' }))
@@ -123,5 +127,44 @@ describe('RunwrightWorkbench', () => {
     expect(actions.onCancelTask).toHaveBeenCalledWith(failed.id)
     expect(actions.onRetryTask).toHaveBeenCalledWith(failed.id)
     expect(actions.onOpenSession).toHaveBeenCalledWith(failed.id)
+  })
+
+  it('discloses the real task overview through its toggle', () => {
+    const queued = task('task-queued', 'queued')
+    render(<RunwrightWorkbench {...props({
+      projects: [project],
+      tasks: [queued],
+      details: { [queued.id]: detail(queued) },
+      selectedProjectId: project.id,
+    })} />)
+
+    fireEvent.click(screen.getByRole('button', { name: '展开工作台概览' }))
+
+    expect(screen.getByRole('region', { name: '工作台概览' })).not.toBeNull()
+    expect(screen.getByRole('button', { name: '取消' })).not.toBeNull()
+  })
+
+  it('opens the original session for a task waiting for native approval', () => {
+    const approval = task('task-approval', 'waiting_approval')
+    const actions = props({
+      projects: [project],
+      tasks: [approval],
+      details: { [approval.id]: detail(approval) },
+      selectedProjectId: project.id,
+    })
+    render(<RunwrightWorkbench {...actions} />)
+
+    fireEvent.click(screen.getByRole('button', { name: '打开审批 Session' }))
+
+    expect(actions.onOpenSession).toHaveBeenCalledWith(approval.id)
+  })
+
+  it('opens the command palette with the keyboard and discloses development tasks', () => {
+    render(<RunwrightWorkbench {...props({ projects: [project], selectedProjectId: project.id })} />)
+
+    fireEvent.keyDown(document, { key: 'k', metaKey: true })
+    fireEvent.click(screen.getByRole('button', { name: '查看研发任务' }))
+
+    expect(screen.getByRole('button', { name: '收起工作台概览' })).not.toBeNull()
   })
 })

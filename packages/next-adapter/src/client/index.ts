@@ -6,7 +6,7 @@ import { RunwrightStore } from './store.js'
 import type { RunwrightFollowFrame } from './store.js'
 import { RunwrightWorkbench } from './workbench.js'
 
-export const inject = ['slots', 'sessions', 'remote', 'remote.runwright', 'directoryPicker']
+export const inject = ['slots', 'uiWorkspace', 'remote', 'remote.directoryPicker']
 
 export interface RemoteStreamItem<Item> {
   readonly generation: number
@@ -39,16 +39,20 @@ interface RunwrightRemoteApi {
 }
 
 export interface RunwrightClientContext {
+  inject(
+    services: string[],
+    callback: (ctx: RunwrightClientContext) => void,
+  ): { dispose(): void | Promise<void> }
   remote: {
     $mount(contribution: TypertRemoteContribution): Promise<() => void | Promise<void>>
     $stream<Item>(options: RemoteStreamOptions<Item>): RemoteStreamSupervisor<Item>
     runwright: RunwrightRemoteApi
+    directoryPicker: {
+      pick(): Promise<RemoteResult<string | null>>
+    }
   }
-  directoryPicker: {
-    pick(): Promise<RemoteResult<string | null>>
-  }
-  sessions: {
-    open(sessionId: string): void
+  uiWorkspace: {
+    openSession(sessionId: string): void
   }
   slots: {
     inject(seat: string, register: () => unknown): unknown
@@ -80,86 +84,94 @@ export async function createRunwrightClient(
   contribution: TypertRemoteContribution = TYPERT_REMOTE,
 ): Promise<RunwrightClient> {
   const unmount = await ctx.remote.$mount(contribution)
-  const store = new RunwrightStore()
-  const methodHandle = ctx.remote.runwright
-  const supervisor = ctx.remote.$stream<RunwrightFollowFrame>({
-    name: 'runwright.follow',
-    open: (signal) => {
-      const protocolStream = methodHandle.follow(signal)
-      return protocolStream
-    },
-    ended: accepted => new Error(accepted ? 'Runwright stream ended' : 'Runwright stream ended before baseline acceptance'),
-    carrierFailed: () => { store.setOffline() },
-  })
+  return await new Promise<RunwrightClient>((resolve, reject) => {
+    const remoteScope = ctx.inject(['remote.runwright'], (remoteCtx) => {
+      try {
+        const methodHandle = remoteCtx.remote.runwright
+        const store = new RunwrightStore()
+        const supervisor = ctx.remote.$stream<RunwrightFollowFrame>({
+          name: 'runwright.follow',
+          open: signal => methodHandle.follow(signal),
+          ended: accepted => new Error(accepted ? 'Runwright stream ended' : 'Runwright stream ended before baseline acceptance'),
+          carrierFailed: () => { store.setOffline() },
+        })
 
-  let disposed = false
-  const lifetime = new AbortController()
-  const consuming = consumeFollow(supervisor, store, () => disposed)
-  const actions: RunwrightActions = {
-    async registerProject() {
-      const picked = await ctx.directoryPicker.pick()
-      if (disposed) return
-      if (!picked.ok) throw new Error(picked.error.message)
-      if (picked.value === null) return
-      const rootPath = picked.value
-      await unwrap(methodHandle.registerProject({ name: directoryName(rootPath), rootPath }, lifetime.signal))
-    },
-    async createTask(projectId, prompt) {
-      await unwrap(methodHandle.createTask({ projectId, prompt }, lifetime.signal))
-    },
-    async cancelTask(taskId) {
-      await unwrap(methodHandle.cancelTask(taskId, lifetime.signal))
-    },
-    async retryTask(taskId) {
-      await unwrap(methodHandle.retryTask(taskId, lifetime.signal))
-    },
-    async openSession(taskId) {
-      const sessionId = await unwrap(methodHandle.openSession(taskId, lifetime.signal))
-      if (!disposed && sessionId !== undefined) ctx.sessions.open(sessionId)
-    },
-  }
+        let disposed = false
+        const lifetime = new AbortController()
+        const consuming = consumeFollow(supervisor, store, () => disposed)
+        const actions: RunwrightActions = {
+          async registerProject() {
+            const desktop = (globalThis as typeof globalThis & {
+              __DSH_DIRECTORY_PICKER__?: { pick(): Promise<string | null> }
+            }).__DSH_DIRECTORY_PICKER__
+            const rootPath = desktop === undefined
+              ? await unwrap(ctx.remote.directoryPicker.pick())
+              : await desktop.pick()
+            if (disposed || rootPath === null) return
+            await unwrap(methodHandle.registerProject({ name: directoryName(rootPath), rootPath }, lifetime.signal))
+          },
+          async createTask(projectId, prompt) {
+            await unwrap(methodHandle.createTask({ projectId, prompt }, lifetime.signal))
+          },
+          async cancelTask(taskId) {
+            await unwrap(methodHandle.cancelTask(taskId, lifetime.signal))
+          },
+          async retryTask(taskId) {
+            await unwrap(methodHandle.retryTask(taskId, lifetime.signal))
+          },
+          async openSession(taskId) {
+            const sessionId = await unwrap(methodHandle.openSession(taskId, lifetime.signal))
+            if (!disposed && sessionId !== undefined) ctx.uiWorkspace.openSession(sessionId)
+          },
+        }
 
-  const Container = () => {
-    const state = useSyncExternalStore(store.subscribe, store.getSnapshot)
-    const [projectChoice, setProjectChoice] = useState<string>()
-    const [taskChoice, setTaskChoice] = useState<string>()
-    const selectedProjectId = state.projects.some(project => project.id === projectChoice)
-      ? projectChoice
-      : state.projects[0]?.id
-    const selectedTaskId = state.tasks.some(task => task.id === taskChoice) ? taskChoice : state.tasks[0]?.id
-    return createElement(RunwrightWorkbench, {
-      ...state,
-      selectedProjectId,
-      selectedTaskId,
-      onSelectProject: setProjectChoice,
-      onRegisterProject: () => { void actions.registerProject() },
-      onCreateTask: (prompt: string) => {
-        if (selectedProjectId) void actions.createTask(selectedProjectId, prompt)
-      },
-      onSelectTask: setTaskChoice,
-      onCancelTask: (taskId: string) => { void actions.cancelTask(taskId) },
-      onRetryTask: (taskId: string) => { void actions.retryTask(taskId) },
-      onOpenSession: (taskId: string) => { void actions.openSession(taskId) },
+        const Container = () => {
+          const state = useSyncExternalStore(store.subscribe, store.getSnapshot)
+          const [projectChoice, setProjectChoice] = useState<string>()
+          const [taskChoice, setTaskChoice] = useState<string>()
+          const selectedProjectId = state.projects.some(project => project.id === projectChoice)
+            ? projectChoice
+            : state.projects[0]?.id
+          const selectedTaskId = state.tasks.some(task => task.id === taskChoice) ? taskChoice : state.tasks[0]?.id
+          return createElement(RunwrightWorkbench, {
+            ...state,
+            selectedProjectId,
+            selectedTaskId,
+            onSelectProject: setProjectChoice,
+            onRegisterProject: () => { void actions.registerProject() },
+            onCreateTask: (prompt: string) => {
+              if (selectedProjectId) void actions.createTask(selectedProjectId, prompt)
+            },
+            onSelectTask: setTaskChoice,
+            onCancelTask: (taskId: string) => { void actions.cancelTask(taskId) },
+            onRetryTask: (taskId: string) => { void actions.retryTask(taskId) },
+            onOpenSession: (taskId: string) => { void actions.openSession(taskId) },
+          })
+        }
+
+        ctx.slots.inject('settings.section', () => ctx.slots.register({
+          name: 'settings.section',
+          id: 'runwright',
+          order: 50,
+          label: 'Runwright',
+        }, Container))
+
+        const dispose = async () => {
+          if (disposed) return
+          disposed = true
+          lifetime.abort()
+          await supervisor.dispose()
+          await consuming
+          await remoteScope.dispose()
+          await unmount()
+        }
+        ctx.effect(() => () => { void dispose() }, 'Runwright workbench')
+        resolve({ store, actions, dispose })
+      } catch (error) {
+        reject(error)
+      }
     })
-  }
-
-  ctx.slots.inject('settings.section', () => ctx.slots.register({
-    name: 'settings.section',
-    id: 'runwright',
-    order: 50,
-    label: 'Runwright',
-  }, Container))
-
-  const dispose = async () => {
-    if (disposed) return
-    disposed = true
-    lifetime.abort()
-    await supervisor.dispose()
-    await consuming
-    await unmount()
-  }
-  ctx.effect(() => () => { void dispose() }, 'Runwright workbench')
-  return { store, actions, dispose }
+  })
 }
 
 async function consumeFollow(

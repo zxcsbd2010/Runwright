@@ -12,10 +12,20 @@
 | NEXT | `/Applications/DSH NEXT.app`，`ai.deepseek.dsh.desktop.next`，2.0.20-next，内置 DSH 0.2.1-rc.3；官方 DMG SHA256 与签名已核验。2026-10-28 已确认主进程、GPU、网络与 renderer 进程持续运行，数据仅写入 `.superpowers/next-e2e/home` |
 | NEXT 启动根因 | Qoder shell 继承 `ELECTRON_RUN_AS_NODE=1`，导致 Electron 以 Node 模式在创建数据目录前静默 `exit(0)`；仅对启动命令使用 `env -u ELECTRON_RUN_AS_NODE` 后运行成功，未修改应用或关闭安全机制 |
 | 本地 next-runtime 包 | 实际为 `@deepseek-ai/dsh-desktop` 0.2.1-rc.3，不是 NEXT 2.0.20-next |
-| adapter 安装入口 | 已声明 `dsh.bundle.patch: ./cordis.patch.yml`，patch 插入 `@runwright/next-adapter`；真实 NEXT 安装与激活未验收 |
+| adapter 安装入口 | 已声明 `dsh.bundle.patch: ./cordis.patch.yml`，patch 插入 `@runwright/next-adapter`；0.1.0 与 0.1.1 已通过真实 NEXT UI 安装，完整激活仍未验收 |
 | 官方 DSH 安装 smoke | 在隔离 `DSH_HOME` 的全新临时 profile 中，官方 DSH 0.2.1-rc.3 已从单个本地 adapter 归档直接安装，无需 contracts 归档或 registry override；adapter 加入 `dsh.profile.bundles`，`--dump-config` 展开 `runwright-next-adapter`。卸载后该层消失，重装后恢复；安装目录内 Host/Client 导出均可由 Node 24 导入。仅验证 DSH 安装契约，不是 NEXT 验收 |
-| Core/adapter | 构建产物存在，但真实 NEXT manifest、安装和激活尚未验收 |
-| 原生权限与模型 | Qoder Computer Use 的辅助功能与屏幕录制授权仍 pending；NEXT 原生权限和模型未启用、未验证，无 UI 截图或端到端日志证据 |
+| Core/adapter | Core 0.1.0 正在隔离配置下监听 `127.0.0.1:47832`；adapter 0.1.1 的 Host 曾与 Core 建立已认证连接，但完整重启后客户端服务依赖错误阻断激活。adapter 0.1.2 已通过 110 条包测试和类型检查并完成打包，尚未安装到真实 NEXT |
+| 原生权限与模型 | Qoder Computer Use 的辅助功能与屏幕录制授权已完成，可操作真实 NEXT UI；NEXT 原生 Computer Use 保持关闭，模型未配置，原生 picker、审批和端到端流程仍未验证 |
+
+## 安装与激活故障记录
+
+| adapter | 真实 NEXT 结果 | 修复与当前状态 |
+| --- | --- | --- |
+| 0.1.0 | Host 日志报告 `TYPERT.model must be an object`；Renderer 报告 `Cannot use import statement outside a module` | 补齐 Typert 空模型数组；浏览器客户端改为 CJS 并包装为 NEXT `window.__ModuleLoader__.load` 格式 |
+| 0.1.1 | 启用后 Host 曾连接隔离 Core；完整重启进入恢复页：`pending (waiting for services: remote.runwright, directoryPicker)` | 启动依赖改为 `slots`、`sessions`、`remote`、`remote.directoryPicker`；目录选择改走 `remote.directoryPicker.pick()`，移除本插件挂载后才存在的 `remote.runwright` 前置依赖 |
+| 0.1.2 | 尚未安装，不能记为激活通过 | 14 个测试文件、110 条测试及类型检查通过；tarball SHA256 为 `32aaa39f4ad09d74d98af08e2b8fc790857212fe45132eae22b07b36ed75d2b4`。真实 NEXT 当前停在 0.1.1 卸载确认警告，等待用户对该第三方警告的动作时确认 |
+
+以上日志仅来自 `.superpowers/next-e2e/` 下的隔离环境，不作为公开审计材料上传。Host/Core 曾连接不等于客户端激活、黄金路径或重启恢复通过。
 
 ## 执行记录
 

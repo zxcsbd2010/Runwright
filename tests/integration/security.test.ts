@@ -132,14 +132,18 @@ describe('Host project, execution, and failure-isolation security', () => {
       dispose: async () => {},
     }
     const ctx: RunwrightClientContext = {
+      inject: (services, callback) => {
+        callback(ctx)
+        return { dispose: async () => {} }
+      },
       remote: {
         $mount: async () => () => {},
         $stream: () => emptySupervisor,
+        directoryPicker: { pick: async () => ({ ok: true as const, value: '/authorized/native-choice' }) },
         runwright: {
           registerProject: async input => { registrations.push(input); return { ok: true as const, value: input } },
         },
       } as unknown as RunwrightClientContext['remote'],
-      directoryPicker: { pick: async () => ({ ok: true as const, value: '/authorized/native-choice' }) },
       sessions: { open: () => {} },
       slots: { inject: () => {}, register: () => ({}) },
       effect: () => {},

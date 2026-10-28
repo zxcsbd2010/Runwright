@@ -184,7 +184,7 @@ describe('runtime manifest reporting', () => {
     })
 
     expect(reported).toEqual(hello({ adapterVersion: adapterManifest.version }))
-    expect(reported.adapterVersion).toBe('0.1.0')
+    expect(reported.adapterVersion).toBe('0.1.2')
   })
 })
 
